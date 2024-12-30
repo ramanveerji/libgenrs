@@ -1,7 +1,7 @@
 import logging
 from .search import Libgen
 
-__version__ = '0.1.9'
+__version__ = '0.2.0'
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
