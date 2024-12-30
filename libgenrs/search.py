@@ -257,7 +257,7 @@ class Libgen:
                         data[res_id]['mirrors'] = {}
 
                         data[res_id]['mirrors'][
-                            'main'] = f'http://library.lol/main/{md5}'
+                            'main'] = f'http://library.gift/main/{md5}'
 
                         data[res_id]['mirrors'][
                             'libgen.lc'] = f'http://libgen.lc/ads.php?md5={md5}'
@@ -302,7 +302,7 @@ class Libgen:
                        dest_folder: Path = None,
                        progress: Optional[Callable[..., Awaitable[None]]] = None,
                        progress_args: list = []) -> Path:
-        """Download the book from support mirro: 'library.lol', 'libgen.lc', 'libgen.gs', 'b-ok.cc'
+        """Download the book from support mirro: 'library.gift', 'libgen.lc', 'libgen.gs', 'b-ok.cc'
 
 
         Args:
