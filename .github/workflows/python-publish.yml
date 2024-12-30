@@ -4,8 +4,7 @@
 name: Build and Upload Python Package
 
 on:
-  release:
-    types: [created]
+  workflow_dispatch:
 
 jobs:
   build_publish:
@@ -24,6 +23,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -U setuptools wheel twine
         pip install -r requirements.txt
+navigationLinks: []
 
     - name: Build
       run: |
