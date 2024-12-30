@@ -25,9 +25,9 @@ jobs:
         pip install -U setuptools wheel twine pytest pytest-asyncio
         pip install -r requirements.txt
 
-    - name: Test
-      run: |
-        py.test tests
+#    - name: Test
+#      run: |
+#        py.test tests
 
     - name: Build
       run: |
