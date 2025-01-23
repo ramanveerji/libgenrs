@@ -111,7 +111,7 @@ The returned data looks like this: (The dict key is the Libgen id of the book)
         'btih': '84195af51fa738cb232297dd1376df6d8b8313be',
         'mirrors':
             {
-                'main': 'http://library.gift/main/a382109f7fdde3be5b2cb4f82d97443b',
+                'main': 'http://books.ms/main/a382109f7fdde3be5b2cb4f82d97443b',
                 'libgen.lc': 'http://libgen.lc/ads.php?md5=a382109f7fdde3be5b2cb4f82d97443b',
                 'z-library': 'http://b-ok.cc/md5/a382109f7fdde3be5b2cb4f82d97443b',
                 'libgen.pw': 'https://libgen.pw/item?id=881061',

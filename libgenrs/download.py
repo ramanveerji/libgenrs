@@ -15,7 +15,7 @@ logg = logging.getLogger(__name__)
 class LibgenDownload:
     def __init__(self) -> None:
         self.dest_folder = Path.cwd()
-        self.mirrors = ['library.gift', 'libgen.lc', 'libgen.gs', 'b-ok.cc']
+        self.mirrors = ['books.ms', 'libgen.lc', 'libgen.gs', 'b-ok.cc']
         self.regex = re.compile(
             r'^(?:http|ftp)s?://'  # http:// or https://  domain...
             r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'
@@ -103,7 +103,7 @@ class LibgenDownload:
 
         domain = str(tld.domain) + '.' + str(tld.suffix)
         direct_links = []
-        if domain == 'library.gift':
+        if domain == 'books.ms':
             div = soup.find('div', attrs={'id': 'download'})
             for li in div.ul.findAll('li'):
                 direct_links.append(li.a['href'])
