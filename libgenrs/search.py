@@ -26,13 +26,6 @@ class Libgen:
                  mirrors: Optional[List[str]] = None) -> None:
         """This class contains async methods to search Library Genesis mirrors and return
         a dictionary of search results using the result ID as the dictionary key.
-
-        Args:
-            sort (str): Column to sort results by ('def', 'id', 'author', 'title', 'publisher', 'year', 'pages', 'language', 'size', 'extension'). Default: 'def'
-            sort_mode (str): Sorting order ('ASC', 'DESC'). Default: 'DESC'
-            result_limit (int): Limit returned results (25, 50, 100). Default: 25
-            url (str, optional): Custom Libgen base URL (e.g., 'https://libgen.li').
-            mirrors (list, optional): List of mirror base URLs for automatic fallback.
         """
 
         if sort.lower() in ['def', 'id', 'author', 'title', 'publisher', 'year', 'pages', 'language', 'size', 'extension']:
@@ -73,17 +66,7 @@ class Libgen:
                      search_field: str = 'def',
                      filters: dict = {},
                      return_fields: list = []) -> dict:
-        """A method used to search Libgen with filters and search fields across active mirrors.
-
-        Args:
-            query (str): Search term
-            search_field (str, optional): Column to search ('def', 'title', 'author', etc.)
-            filters (dict, optional): Filter dictionary for results
-            return_fields (list, optional): Specific fields to return
-
-        Returns:
-            dict: Dictionary of results keyed by book ID
-        """
+        """A method used to search Libgen with filters and search fields across active mirrors."""
 
         if not query or len(query.strip()) < 2:
             raise ValueError(f'The query "{query}" is invalid or less than 2 characters.')
@@ -105,9 +88,9 @@ class Libgen:
                 for endpoint in ['index.php', 'search.php']:
                     search_url = f'{base_url}/{endpoint}?{query_params}'
                     try:
-                        ids_list = await self.__get_ids(session, search_url)
+                        ids_list, table_meta = await self.__get_ids(session, search_url)
                         if ids_list:
-                            data = await self.__get_json(session, base_url, ids_list, return_fields, filters)
+                            data = await self.__get_json(session, base_url, ids_list, return_fields, filters, table_meta)
                             if data:
                                 self.__libgen_url = base_url
                                 return data
@@ -120,14 +103,14 @@ class Libgen:
             logg.warning(f'All Libgen mirrors failed. Last error: {last_exception}')
         return {}
 
-    async def __get_ids(self, session: aiohttp.ClientSession, url: str) -> list:
+    async def __get_ids(self, session: aiohttp.ClientSession, url: str) -> tuple:
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=3.5), ssl=False) as resp:
                 if resp.status != 200:
-                    return []
+                    return [], {}
                 text = await resp.text()
         except Exception:
-            return []
+            return [], {}
 
         soup = bsoup(text, 'html.parser')
         for s in soup.find_all('script'):
@@ -140,10 +123,11 @@ class Libgen:
         if not table:
             m_req = re.search(r'[?&]req=([a-fA-F0-9]{32})', url)
             if m_req:
-                return [m_req.group(1)]
-            return []
+                return [m_req.group(1)], {}
+            return [], {}
 
         ids = []
+        table_meta = {}
         rows = table.find_all('tr')
         for tr in rows[1:]:
             tds = tr.find_all('td')
@@ -173,17 +157,41 @@ class Libgen:
             if not found_id and tds[0].get_text(strip=True).isdigit():
                 found_id = tds[0].get_text(strip=True)
 
-            if found_id and found_id not in ids:
-                ids.append(found_id)
+            if found_id:
+                if found_id not in ids:
+                    ids.append(found_id)
 
-        return ids
+                if len(tds) >= 8:
+                    title_a = tds[0].find('a')
+                    title_text = title_a.get_text(strip=True) if title_a else tds[0].get_text(strip=True)
+                    author_text = tds[1].get_text(strip=True) if len(tds) > 1 else ''
+                    publisher_text = tds[2].get_text(strip=True) if len(tds) > 2 else ''
+                    year_text = tds[3].get_text(strip=True) if len(tds) > 3 else ''
+                    language_text = tds[4].get_text(strip=True) if len(tds) > 4 else ''
+                    pages_text = tds[5].get_text(strip=True) if len(tds) > 5 else ''
+                    size_text = tds[6].get_text(strip=True) if len(tds) > 6 else ''
+                    ext_text = tds[7].get_text(strip=True) if len(tds) > 7 else ''
+
+                    table_meta[str(found_id)] = {
+                        'title': title_text or 'Unknown Title',
+                        'author': author_text or 'Unknown Author',
+                        'publisher': publisher_text,
+                        'year': year_text,
+                        'language': language_text,
+                        'pages': pages_text,
+                        'filesize': size_text,
+                        'extension': ext_text or 'pdf'
+                    }
+
+        return ids, table_meta
 
     async def __get_json(self,
                          session: aiohttp.ClientSession,
                          base_url: str,
                          ids_list: list,
                          return_fields: list,
-                         filters: dict) -> dict:
+                         filters: dict,
+                         table_meta: dict = {}) -> dict:
 
         ids_param = ','.join(ids_list)
 
@@ -203,6 +211,23 @@ class Libgen:
             except Exception as e:
                 logg.debug(f'Failed json query {json_url}: {e}')
 
+        if not raw_data and table_meta:
+            raw_data = []
+            for item_id in ids_list:
+                if item_id in table_meta:
+                    meta = table_meta[item_id]
+                    raw_data.append({
+                        'id': str(item_id),
+                        'title': meta.get('title'),
+                        'author': meta.get('author'),
+                        'publisher': meta.get('publisher'),
+                        'year': meta.get('year'),
+                        'language': meta.get('language'),
+                        'pages': meta.get('pages'),
+                        'filesize': meta.get('filesize'),
+                        'extension': meta.get('extension')
+                    })
+
         if not raw_data:
             return {}
 
@@ -210,14 +235,16 @@ class Libgen:
                                         ids_list=ids_list,
                                         filters=filters,
                                         return_fields=return_fields,
-                                        base_url=base_url)
+                                        base_url=base_url,
+                                        table_meta=table_meta)
 
     async def __format_json(self,
                             raw_data: Any,
                             ids_list: list,
                             filters: dict,
                             return_fields: list,
-                            base_url: str) -> dict:
+                            base_url: str,
+                            table_meta: dict = {}) -> dict:
 
         data = {}
         normalized_data = {}
@@ -242,30 +269,37 @@ class Libgen:
             removed = []
             for res_id in list(data.keys()):
                 item = data[res_id]
+                meta = table_meta.get(str(res_id), {}) if table_meta else {}
 
-                # Fill missing essential metadata fields
-                if not item.get('title'):
-                    loc = item.get('locator', '')
-                    if loc:
-                        item['title'] = loc.rsplit('.', 1)[0]
+                # Fill missing essential metadata fields using HTML table fallback
+                if not item.get('title') or item.get('title') == 'Unknown Title':
+                    if meta.get('title') and meta.get('title') != 'Unknown Title':
+                        item['title'] = meta['title']
                     else:
-                        item['title'] = 'Unknown Title'
-                if not item.get('author'):
-                    item['author'] = 'Unknown Author'
-                if 'publisher' not in item or item['publisher'] is None:
-                    item['publisher'] = ''
-                if 'year' not in item or item['year'] is None:
-                    item['year'] = ''
-                if 'language' not in item or item['language'] is None:
-                    item['language'] = ''
-                if 'pages' not in item or item['pages'] is None:
-                    item['pages'] = ''
-                if 'volumeinfo' not in item or item['volumeinfo'] is None:
-                    item['volumeinfo'] = ''
-                if 'filesize' not in item or item['filesize'] is None:
-                    item['filesize'] = '0'
-                if 'extension' not in item or item['extension'] is None:
-                    item['extension'] = 'pdf'
+                        loc = item.get('locator', '')
+                        if loc:
+                            item['title'] = loc.rsplit('.', 1)[0]
+                        else:
+                            item['title'] = 'Unknown Title'
+
+                if not item.get('author') or item.get('author') == 'Unknown Author':
+                    if meta.get('author') and meta.get('author') != 'Unknown Author':
+                        item['author'] = meta['author']
+                    else:
+                        item['author'] = 'Unknown Author'
+
+                if not item.get('publisher') and meta.get('publisher'):
+                    item['publisher'] = meta['publisher']
+                if not item.get('year') and meta.get('year'):
+                    item['year'] = meta['year']
+                if not item.get('language') and meta.get('language'):
+                    item['language'] = meta['language']
+                if not item.get('pages') and meta.get('pages'):
+                    item['pages'] = meta['pages']
+                if not item.get('extension') and meta.get('extension'):
+                    item['extension'] = meta['extension']
+                if not item.get('filesize') and meta.get('filesize'):
+                    item['filesize'] = meta['filesize']
 
                 if filters:
                     if not await Util().filter_result(data[res_id], filters):
@@ -325,17 +359,6 @@ class Libgen:
                        dest_folder: Path = None,
                        progress: Optional[Callable[..., Awaitable[None]]] = None,
                        progress_args: list = []) -> Path:
-        """Download the book from supported mirror URL.
-
-        Args:
-            url (str): The download link retrieved from search method
-            dest_folder (Path, optional): Directory path where the book should be saved.
-            progress (Optional[Callable]): Progress callback function.
-            progress_args (list): Additional arguments for progress callback.
-
-        Returns:
-            Path: Path to the downloaded file.
-        """
         return await LibgenDownload().download(url,
                                                dest_folder,
                                                progress,
