@@ -2,7 +2,7 @@ import logging
 from .search import Libgen
 from .download import LibgenDownload
 
-__version__ = '0.3.4'
+__version__ = '0.3.5'
 __all__ = ['Libgen', 'LibgenDownload']
 
 logging.basicConfig(

@@ -350,12 +350,17 @@ class Libgen:
                         removed.append(res_id)
                         continue
 
+                md5_val = data[res_id].get('md5', '')
+                tor_number = str(res_id)[:-3] + '000' if res_id.isdigit() and int(res_id) >= 1000 else '000'
+
                 cover_reg = re.compile(r'^\d+\\?\/[a-z-0-9]+\..{1,4}$', re.IGNORECASE)
                 if 'coverurl' in data[res_id] and data[res_id]['coverurl']:
                     if re.match(cover_reg, data[res_id]["coverurl"]):
                         data[res_id]['coverurl'] = f'{base_url}/covers/{data[res_id]["coverurl"]}'
                     elif not data[res_id]['coverurl'].startswith('http'):
                         data[res_id]['coverurl'] = f'{base_url}/covers/{data[res_id]["coverurl"]}'
+                elif md5_val:
+                    data[res_id]['coverurl'] = f'{base_url}/covers/{tor_number}/{md5_val}.jpg'
                 else:
                     data[res_id]['coverurl'] = None
 
