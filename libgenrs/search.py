@@ -28,11 +28,11 @@ class Libgen:
         a dictionary of search results using the result ID as the dictionary key.
         """
 
-        if sort.lower() in ['def', 'id', 'author', 'title', 'publisher', 'year', 'pages', 'language', 'size', 'extension']:
+        if sort.lower() in ['def', 'id', 'author', 'title', 'publisher', 'year', 'pages', 'language', 'size', 'extension', 'md5']:
             self.sort = sort.lower()
         else:
             raise ValueError(
-                'sort parameter invalid. Allowed values: (def, id, author, title, publisher, year, pages, language, size, extension)'
+                'sort parameter invalid. Allowed values: (def, id, author, title, publisher, year, pages, language, size, extension, md5)'
             )
         if sort_mode.upper() in ['ASC', 'DESC']:
             self.sort_mode = sort_mode.upper()
@@ -71,10 +71,17 @@ class Libgen:
         if not query or len(query.strip()) < 2:
             raise ValueError(f'The query "{query}" is invalid or less than 2 characters.')
 
+        clean_q = query.strip()
+        # Handle MD5 query directly
+        if search_field.lower() == 'md5' or (len(clean_q) == 32 and all(c in '0123456789abcdefABCDEF' for c in clean_q)):
+            md5_res = await self.__get_md5_detail(clean_q)
+            if md5_res:
+                return md5_res
+
         if search_field.lower() not in self.__fields:
             raise ValueError(f'search_field invalid. Allowed fields: {",".join(self.__fields)}')
 
-        req = 'req=' + '+'.join(query.strip().split(' '))
+        req = 'req=' + '+'.join(clean_q.split(' '))
         column = 'column=' + search_field.lower()
         sort = 'sort=' + self.sort
         sort_mode = 'sortmode=' + self.sort_mode
@@ -101,6 +108,45 @@ class Libgen:
 
         if last_exception:
             logg.warning(f'All Libgen mirrors failed. Last error: {last_exception}')
+        return {}
+
+    async def __get_md5_detail(self, md5: str) -> dict:
+        async with aiohttp.ClientSession(headers=self.headers) as session:
+            for mirror in self.mirrors:
+                base_url = mirror.rstrip('/')
+                url = f'{base_url}/ads.php?md5={md5}'
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=4), ssl=False) as resp:
+                        if resp.status == 200:
+                            text = await resp.text()
+                            detail = {'md5': md5}
+                            m_title = re.search(r'title\s*=\s*\{([^}]+)\}', text)
+                            if m_title:
+                                detail['title'] = m_title.group(1).strip()
+                            m_author = re.search(r'author\s*=\s*\{([^}]+)\}', text)
+                            if m_author:
+                                detail['author'] = m_author.group(1).strip()
+                            m_pub = re.search(r'publisher\s*=\s*\{([^}]+)\}', text)
+                            if m_pub:
+                                detail['publisher'] = m_pub.group(1).strip()
+                            m_year = re.search(r'year\s*=\s*\{([^}]+)\}', text)
+                            if m_year:
+                                detail['year'] = m_year.group(1).strip()
+                            
+                            soup = bsoup(text, 'html.parser')
+                            img = soup.find('img', src=re.compile(r'covers/'))
+                            if img:
+                                detail['coverurl'] = f'{base_url}/' + img['src'].lstrip('/')
+                            else:
+                                detail['coverurl'] = None
+                                
+                            detail['mirrors'] = {'main': url}
+                            detail['extension'] = 'pdf'
+                            detail['filesize'] = '0'
+                            if detail.get('title'):
+                                return {md5: detail}
+                except Exception:
+                    continue
         return {}
 
     async def __get_ids(self, session: aiohttp.ClientSession, url: str) -> tuple:
