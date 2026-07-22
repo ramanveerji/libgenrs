@@ -1,299 +1,286 @@
 import re
 import logging
-import requests
+import asyncio
+import aiohttp
 from .utils import Util
 from pathlib import Path
 from .download import LibgenDownload
 from bs4 import BeautifulSoup as bsoup
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, List, Dict, Any
 
 logg = logging.getLogger(__name__)
+
+DEFAULT_MIRRORS = [
+    'https://libgen.li',
+    'https://libgen.lc',
+    'https://libgen.is',
+    'https://libgen.rs',
+    'https://libgen.st',
+]
+
 
 class Libgen:
     def __init__(self,
                  sort: str = 'def',
                  sort_mode: str = 'DESC',
-                 result_limit: int = 25) -> None:
-        """This class contains an async method to search Library Genesis and return a dictionary of search
-        results using the results id as the dictinary key.
+                 result_limit: int = 25,
+                 url: Optional[str] = None,
+                 mirrors: Optional[List[str]] = None) -> None:
+        """This class contains async methods to search Library Genesis mirrors and return
+        a dictionary of search results using the result ID as the dictionary key.
 
         Args:
-
-            sort (str):  It is used to sort the results based on the following allowed column values (based on libgen) - id, author, title, publisher, year, pages, language, size, extension.
-                Default value = 'def'
-
-            sort_mode (str):  It is used to sort the results in ascending or descending order based on the the column chosen with sort parameter.
-                Default vaule = 'DESC'
-
-            result_limit (int):  It is used to limit the returned values. Allowed values (based on libgen) are 25, 50, 100. If other than the allowed number in given it will return 25 results.
-                Default vaule = 25
-
-        Methods:
-            search -> dict
-
-        Retrun:
-            An object with a search and download method.
-
+            sort (str): Column to sort results by ('def', 'id', 'author', 'title', 'publisher', 'year', 'pages', 'language', 'size', 'extension'). Default: 'def'
+            sort_mode (str): Sorting order ('ASC', 'DESC'). Default: 'DESC'
+            result_limit (int): Limit returned results (25, 50, 100). Default: 25
+            url (str, optional): Custom Libgen base URL (e.g., 'https://libgen.li').
+            mirrors (list, optional): List of mirror base URLs for automatic fallback.
         """
 
         if sort.lower() in ['def', 'id', 'author', 'title', 'publisher', 'year', 'pages', 'language', 'size', 'extension']:
             self.sort = sort.lower()
         else:
             raise ValueError(
-                f'sort parameter invalid. Allowed value is one of these (def, id, author, title, publisher, year, pages, language, size, extension)'
+                'sort parameter invalid. Allowed values: (def, id, author, title, publisher, year, pages, language, size, extension)'
             )
-        if sort_mode in ['ASC', 'DESC']:
+        if sort_mode.upper() in ['ASC', 'DESC']:
             self.sort_mode = sort_mode.upper()
         else:
             raise ValueError(
-                f'sort_mode parameter invalid. Allowed vaule is one of these (ASC, DESC)'
+                'sort_mode parameter invalid. Allowed values: (ASC, DESC)'
             )
         self.result_limit = result_limit
         self.__fields = ['def', 'title', 'author', 'series', 'publisher', 'year',
                          'identifier', 'language', 'md5', 'tags', 'extension']
-        self.__libgen_url = 'http://libgen.is'
-        self.__json_url = f'{self.__libgen_url}/json.php?'
-        self.__search_url = f'{self.__libgen_url}/search.php?'
+        
+        self.mirrors = mirrors if mirrors else DEFAULT_MIRRORS.copy()
+        if url:
+            normalized_url = url.rstrip('/')
+            if not normalized_url.startswith(('http://', 'https://')):
+                normalized_url = 'https://' + normalized_url
+            if normalized_url not in self.mirrors:
+                self.mirrors.insert(0, normalized_url)
+            self.__libgen_url = normalized_url
+        else:
+            self.__libgen_url = self.mirrors[0]
 
-        self.__ses = requests.Session()
-        self.__ses.cookies.set('lg_topic', 'libgen',
-                               domain='libgen.is', expires=None)
-        self.__ses.headers.update({
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/86.0.4240.198 Safari/537.36'
-        })
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                          'AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/120.0.0.0 Safari/537.36'
+        }
 
     async def search(self,
                      query: str,
                      search_field: str = 'def',
                      filters: dict = {},
                      return_fields: list = []) -> dict:
-        """A method used to search libgen.rs with diffrent filter and search fields.
+        """A method used to search Libgen with filters and search fields across active mirrors.
 
-            Args:
+        Args:
+            query (str): Search term
+            search_field (str, optional): Column to search ('def', 'title', 'author', etc.)
+            filters (dict, optional): Filter dictionary for results
+            return_fields (list, optional): Specific fields to return
 
-                query (str): The text to be searched
-
-                search_field (str, optional): The colomun to search the query from, allowed columns to search are,
-
-                    'def' = default search according to relevance
-                    'title' = search the query from the title column of the books
-                    'author' = search the query from the author column of the books
-                    'series' = search the query from the series column of the books
-                    'publisher' = search the query from the publisher column of the books
-                    'year' = search the query from the year column of the books
-                    'identifier' = search the query from the identifier column of the books
-                    'language' = search the query from the language column of the books
-                    'md5' = search the query from the md5 column of the books
-                    'tags' = search the query from the tags column of the books
-                    'extension' = search the query from the extention column of the books
-
-                filters (dict, optional): filter the results based on a given criterial. Works on every returned fields. Becareful when using this, it might decrese the limit of the returned results
-
-                    Example;
-                        {
-                            'year': '2009'
-                            'extention': 'pdf'
-                        }
-
-                return_fields (list, optional): limit the reurned fields to a given fields in the list. Can pick from aviliable return fields.
-
-                    Example;
-                        [
-                            'id'
-                            'title'
-                            'md5'
-                        ]
-
-            Raises:
-
-                ValueError: if query is empty.
-                ValueError: if the query is less than 2 characters.
-                ValueError: if search_field parameter is not from the allowed columns
-
-            Returns:
-
-                dict: returns a dictionary of dictionaries where the 'id' of the book is the key to the detailed result dictionary
-
+        Returns:
+            dict: Dictionary of results keyed by book ID
         """
 
-        if query:
-            if len(query.strip()) < 2:
-                raise ValueError(
-                    f'The query "{query}" is less than 2 characters.')
-            req = 'req=' + '+'.join(query.strip().split(' '))
-        else:
-            raise ValueError(f'Query not set.')
+        if not query or len(query.strip()) < 2:
+            raise ValueError(f'The query "{query}" is invalid or less than 2 characters.')
 
-        if search_field.lower() in self.__fields:
-            column = 'column=' + search_field.lower()
-        else:
-            raise ValueError(
-                f'search_field invalid. Allowed fields are {",".join(self.__fields)}')
+        if search_field.lower() not in self.__fields:
+            raise ValueError(f'search_field invalid. Allowed fields: {",".join(self.__fields)}')
 
+        req = 'req=' + '+'.join(query.strip().split(' '))
+        column = 'column=' + search_field.lower()
         sort = 'sort=' + self.sort
         sort_mode = 'sortmode=' + self.sort_mode
         res = 'res=' + str(self.result_limit)
+        query_params = '&'.join([req, res, column, sort, sort_mode])
 
-        url = '&'.join([self.__search_url, req, res, column, sort, sort_mode])
+        last_exception = None
+        async with aiohttp.ClientSession(headers=self.headers) as session:
+            for mirror in self.mirrors:
+                base_url = mirror.rstrip('/')
+                # Try search.php and index.php endpoints
+                for endpoint in ['search.php', 'index.php']:
+                    search_url = f'{base_url}/{endpoint}?{query_params}'
+                    try:
+                        ids_list = await self.__get_ids(session, search_url)
+                        if ids_list:
+                            data = await self.__get_json(session, base_url, ids_list, return_fields, filters)
+                            if data:
+                                self.__libgen_url = base_url
+                                return data
+                    except Exception as e:
+                        logg.debug(f'Mirror {search_url} failed: {e}')
+                        last_exception = e
+                        continue
 
-        return await self.__search(url,
-                                   filters,
-                                   return_fields)
+        if last_exception:
+            logg.warning(f'All Libgen mirrors failed. Last error: {last_exception}')
+        return {}
 
-    async def __search(self,
-                       url: str,
-                       filters: dict,
-                       return_fields: list) -> dict:
+    async def __get_ids(self, session: aiohttp.ClientSession, url: str) -> list:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=4), ssl=False) as resp:
+            if resp.status != 200:
+                return []
+            text = await resp.text()
 
-        ids_list = await self.__get_ids(url=url)
-        data = {}
-        if ids_list:
-            data = await self.__get_json(ids_list=ids_list,
-                                         return_fields=return_fields,
-                                         filters=filters)
-        return data
-
-    async def __get_ids(self,
-                        url: str) -> list:
-
-        r = self.__ses.get(url=url,
-                           allow_redirects=True)
-        logg.debug(
-            f'Requesting IDs page resulted in code: {r.status_code}')
-        if r.status_code != 200:
-            await Util().raise_error(r.status_code, str(r.reason) + ' - ' + str(bsoup(r.text, 'lxml').get_text()))
-
-        soup = bsoup(r.content, 'lxml')
-        for s in soup.findAll('script'):
+        soup = bsoup(text, 'html.parser')
+        for s in soup.find_all('script'):
             s.decompose()
-        table = soup.find('table', attrs={'rules': 'rows'})
+
+        table = soup.find('table', attrs={'id': 'tablelibgen'}) or soup.find('table', attrs={'rules': 'rows'})
+        if not table:
+            table = soup.find('table', class_=re.compile(r'table', re.I))
+
+        if not table:
+            return []
 
         ids = []
-        for tr in table.findAll('tr')[1:]:
-            ids.append(tr.td.get_text(strip=True))
+        rows = table.find_all('tr')
+        for tr in rows[1:]:
+            tds = tr.find_all('td')
+            if not tds:
+                continue
+
+            found_id = None
+            for a in tr.find_all('a'):
+                href = a.get('href', '')
+                # Match /file.php?id=12345 or index.php?id=12345
+                m = re.search(r'[?&]id=(\d+)', href)
+                if m:
+                    found_id = m.group(1)
+                    break
+                m_md5 = re.search(r'[?&]md5=([a-fA-F0-9]{32})', href)
+                if m_md5:
+                    found_id = m_md5.group(1)
+                    break
+
+            if not found_id and tds[0].get_text(strip=True).isdigit():
+                found_id = tds[0].get_text(strip=True)
+
+            if found_id and found_id not in ids:
+                ids.append(found_id)
+
         return ids
 
     async def __get_json(self,
+                         session: aiohttp.ClientSession,
+                         base_url: str,
                          ids_list: list,
                          return_fields: list,
                          filters: dict) -> dict:
 
-        ids = 'ids=' + ','.join(ids_list)
-        fields = 'fields=' + \
-            ('id,' if return_fields and 'id' not in return_fields else '')
-        if return_fields and 'mirrors' in return_fields:
-            fields += f'md5,sha1,filesize,edonkey,aich,tth,extension{"," if len(return_fields) > 1 else ""}'
+        ids_param = ','.join(ids_list)
 
-        fields += (','.join([fld for fld in return_fields if fld !=
-                             'mirrors']) if return_fields else '*')
+        # Try json.php with object=f parameter (libgen.li/lc schema) and standard schema
+        json_urls = [
+            f'{base_url}/json.php?object=f&ids={ids_param}&fields=*',
+            f'{base_url}/json.php?ids={ids_param}&fields=*'
+        ]
 
-        url = '&'.join([self.__json_url, ids, fields])
-        r = self.__ses.get(url,
-                           allow_redirects=True)
-        logg.debug(
-            f'Requesting JSON data from resulted in code: {r.status_code}')
-        if r.status_code != 200:
-            await Util().raise_error(r.status_code, str(r.reason) + ' - ' + str(bsoup(r.text, 'lxml').get_text()))
+        raw_data = None
+        for json_url in json_urls:
+            try:
+                async with session.get(json_url, timeout=aiohttp.ClientTimeout(total=10), ssl=False) as resp:
+                    if resp.status == 200:
+                        raw_data = await resp.json()
+                        if raw_data and not (isinstance(raw_data, dict) and 'error' in raw_data):
+                            break
+            except Exception as e:
+                logg.debug(f'Failed json query {json_url}: {e}')
 
-        raw_data = r.json()
+        if not raw_data:
+            return {}
+
         return await self.__format_json(raw_data=raw_data,
                                         ids_list=ids_list,
                                         filters=filters,
-                                        return_fields=return_fields)
+                                        return_fields=return_fields,
+                                        base_url=base_url)
 
     async def __format_json(self,
-                            raw_data: list,
+                            raw_data: Any,
                             ids_list: list,
                             filters: dict,
-                            return_fields: list) -> dict:
+                            return_fields: list,
+                            base_url: str) -> dict:
 
         data = {}
-        if raw_data:
-            for res in ids_list:
-                data[str(res)] = next(
-                    item for item in raw_data if item['id'] == str(res))
-            if data:
-                removed = []
-                for res_id in data:
-                    if filters:
-                        if not await Util().filter_result(data[str(res_id)], filters):
-                            removed.append(res_id)
-                            continue
+        # Normalize raw_data into a dictionary keyed by ID
+        normalized_data = {}
+        if isinstance(raw_data, list):
+            for item in raw_data:
+                if isinstance(item, dict) and 'id' in item:
+                    normalized_data[str(item['id'])] = item
+        elif isinstance(raw_data, dict):
+            for item_id, item_val in raw_data.items():
+                if isinstance(item_val, dict):
+                    item_val['id'] = str(item_id)
+                    normalized_data[str(item_id)] = item_val
 
-                    cover_reg = re.compile(r'^\d+\\?\/[a-z-0-9]+\..{1,4}$', re.IGNORECASE)
-                    if 'coverurl' in data[res_id].keys():
-                        if re.match(cover_reg, data[res_id]["coverurl"]):
-                            data[res_id][
-                                'coverurl'] = f'{self.__libgen_url}/covers/{data[res_id]["coverurl"]}'
-                        else:
-                            data[res_id][
-                                'coverurl'] = 'https://cdn2.iconfinder.com/data/icons/leto-blue-online-education/64/__book_mouth_education_online-512.png'
-                    if not return_fields or 'mirrors' in return_fields:
-                        md5 = data[res_id]['md5']
-                        if return_fields and 'md5' not in return_fields:
-                            data[res_id].pop('md5')
-                        sha1 = data[res_id]['sha1']
-                        if return_fields and 'sha1' not in return_fields:
-                            data[res_id].pop('sha1')
-                        size = data[res_id]['filesize']
-                        if return_fields and 'filesize' not in return_fields:
-                            data[res_id].pop('filesize')
-                        edonkey = data[res_id]['edonkey']
-                        if return_fields and 'edonkey' not in return_fields:
-                            data[res_id].pop('edonkey')
-                        aich = data[res_id]['aich']
-                        if return_fields and 'aich' not in return_fields:
-                            data[res_id].pop('aich')
-                        tth = data[res_id]['tth']
-                        if return_fields and 'tth' not in return_fields:
-                            data[res_id].pop('tth')
-                        extension = data[res_id]['extension']
-                        if return_fields and 'extension' not in return_fields:
-                            data[res_id].pop('extension')
-                        tor_number = str(res_id)[
-                            :-3] + '000' if int(res_id) >= 1000 else '000'
-                        data[res_id]['mirrors'] = {}
+        for res_id in ids_list:
+            if str(res_id) in normalized_data:
+                data[str(res_id)] = normalized_data[str(res_id)].copy()
 
-                        data[res_id]['mirrors'][
-                            'main'] = f'http://books.ms/main/{md5}'
+        if not data and normalized_data:
+            data = normalized_data.copy()
 
-                        data[res_id]['mirrors'][
-                            'libgen.lc'] = f'http://libgen.lc/ads.php?md5={md5}'
+        if data:
+            removed = []
+            for res_id in list(data.keys()):
+                if filters:
+                    if not await Util().filter_result(data[res_id], filters):
+                        removed.append(res_id)
+                        continue
 
-                        data[res_id]['mirrors'][
-                            'z-library'] = f'http://b-ok.cc/md5/{md5}'
+                cover_reg = re.compile(r'^\d+\\?\/[a-z-0-9]+\..{1,4}$', re.IGNORECASE)
+                if 'coverurl' in data[res_id]:
+                    if re.match(cover_reg, data[res_id]["coverurl"]):
+                        data[res_id]['coverurl'] = f'{base_url}/covers/{data[res_id]["coverurl"]}'
+                    elif not data[res_id]['coverurl'].startswith('http'):
+                        data[res_id]['coverurl'] = f'{base_url}/covers/{data[res_id]["coverurl"]}'
 
-                        data[res_id]['mirrors'][
-                            'libgen.pw'] = f'https://libgen.pw/item?id={res_id}'
+                if not return_fields or 'mirrors' in return_fields:
+                    md5 = data[res_id].get('md5', '')
+                    sha1 = data[res_id].get('sha1', '')
+                    size = data[res_id].get('filesize', '0')
+                    edonkey = data[res_id].get('edonkey', '')
+                    aich = data[res_id].get('aich', '')
+                    tth = data[res_id].get('tth', '')
+                    extension = data[res_id].get('extension', '')
 
-                        data[res_id]['mirrors'][
-                            'bookfi'] = f'http://bookfi.net/md5/{md5}'
+                    if return_fields:
+                        for fld in ['md5', 'sha1', 'filesize', 'edonkey', 'aich', 'tth', 'extension']:
+                            if fld not in return_fields and fld in data[res_id]:
+                                data[res_id].pop(fld, None)
 
-                        data[res_id]['mirrors'][
-                            'torrent'] = f'{self.__libgen_url}/book/index.php?md5={md5}&oftorrent='
+                    tor_number = str(res_id)[:-3] + '000' if res_id.isdigit() and int(res_id) >= 1000 else '000'
+                    
+                    data[res_id]['mirrors'] = {
+                        'main': f'{base_url}/ads.php?md5={md5}',
+                        'libgen.lc': f'https://libgen.li/ads.php?md5={md5}',
+                        'library.lol': f'https://library.lol/main/{md5}',
+                        'z-library': f'https://annas-archive.org/md5/{md5}',
+                        'libgen.pw': f'{base_url}/file.php?id={res_id}',
+                        'torrent': f'{base_url}/book/index.php?md5={md5}&oftorrent=',
+                        'torrent_1k': f'{base_url}/repository_torrent/r_{tor_number}.torrent',
+                        'gnutella': f'magnet:?xt=urn:sha1:{sha1}&xl={size}&dn={md5}.{extension}',
+                        'ed2k': f'ed2k://|file|{md5.upper()}.{extension}|{size}|{edonkey}|h={aich}|/',
+                        'dc++': f'magnet:?xt=urn:tree:tiger:{tth}&xl={size}&dn={md5}.{extension}'
+                    }
 
-                        data[res_id]['mirrors'][
-                            'torrent_1k'] = f'{self.__libgen_url}/repository_torrent/r_{tor_number}.torrent'
+                data[res_id].pop('torrent', None)
+                data[res_id].pop('locator', None)
+                data[res_id].pop('id', None)
 
-                        data[res_id]['mirrors'][
-                            'gnutella'] = f'magnet:?xt=urn:sha1:{sha1}&xl={size}&dn={md5}.{extension}'
+            for res_id in removed:
+                data.pop(res_id, None)
 
-                        data[res_id]['mirrors'][
-                            'ed2k'] = f'ed2k://|file|{md5.upper()}.{extension}|{size}|{edonkey}|h={aich}|/'
-
-                        data[res_id]['mirrors'][
-                            'dc++'] = f'magnet:?xt=urn:tree:tiger:{tth}&xl={size}&dn={md5}.{extension}'
-
-                    if 'torrent' in data[res_id].keys():
-                        data[res_id].pop('torrent')
-                    if 'locator' in data[res_id].keys():
-                        data[res_id].pop('locator')
-                    data[res_id].pop('id')
-                if removed:
-                    for ids in removed:
-                        data.pop(ids)
         logg.info(f'Finished processing {len(data)} results.')
         return data
 
@@ -302,20 +289,16 @@ class Libgen:
                        dest_folder: Path = None,
                        progress: Optional[Callable[..., Awaitable[None]]] = None,
                        progress_args: list = []) -> Path:
-        """Download the book from support mirro: 'books.ms', 'libgen.lc', 'libgen.gs', 'b-ok.cc'
-
+        """Download the book from supported mirror URL.
 
         Args:
-            url (str): The download like retrived from search method
-            dest_folder (Path, optional): A path where the book should be download. Defaults to the current working directory.
-            progress (Optional[Callable[..., Awaitable[None]]]): An awaitable function for progress updates that takes at least 2 arguments -
-                    current: int and total int or str and other arguments passed through progress args.
-            progress_args (list): Arguments to be passed to the progress update function along with progress update
-
+            url (str): The download link retrieved from search method
+            dest_folder (Path, optional): Directory path where the book should be saved.
+            progress (Optional[Callable]): Progress callback function.
+            progress_args (list): Additional arguments for progress callback.
 
         Returns:
-            Path: The full path of the download book.
-
+            Path: Path to the downloaded file.
         """
         return await LibgenDownload().download(url,
                                                dest_folder,

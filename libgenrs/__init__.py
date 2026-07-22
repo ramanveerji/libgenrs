@@ -1,7 +1,10 @@
 import logging
 from .search import Libgen
+from .download import LibgenDownload
 
-__version__ = '0.2.3'
+__version__ = '0.3.0'
+__all__ = ['Libgen', 'LibgenDownload']
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
