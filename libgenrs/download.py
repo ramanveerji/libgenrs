@@ -110,11 +110,11 @@ class LibgenDownload:
                         current = 0
                         logg.info(f'Starting download: {file_name}')
                         st_time = time.time()
-                        async for chunk in resp.content.iter_chunked(64 * 1024):
+                        async for chunk in resp.content.iter_chunked(1024 * 1024):
                             await dl_file.write(chunk)
                             current += len(chunk)
                             cr_time = time.time()
-                            if cr_time - st_time > 1:
+                            if cr_time - st_time >= 4:
                                 if progress:
                                     try:
                                         await progress(current, total_size, *progress_args)
