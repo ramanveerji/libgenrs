@@ -110,7 +110,7 @@ class LibgenDownload:
                         current = 0
                         logg.info(f'Starting download: {file_name}')
                         st_time = time.time()
-                        async for chunk, _ in resp.content.iter_chunks():
+                        async for chunk in resp.content.iter_chunked(64 * 1024):
                             await dl_file.write(chunk)
                             current += len(chunk)
                             cr_time = time.time()

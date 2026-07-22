@@ -12,10 +12,8 @@ logg = logging.getLogger(__name__)
 
 DEFAULT_MIRRORS = [
     'https://libgen.li',
-    'https://libgen.lc',
-    'https://libgen.is',
-    'https://libgen.rs',
-    'https://libgen.st',
+    'https://libgen.vg',
+    'https://libgen.la',
 ]
 
 
@@ -104,8 +102,7 @@ class Libgen:
         async with aiohttp.ClientSession(headers=self.headers) as session:
             for mirror in self.mirrors:
                 base_url = mirror.rstrip('/')
-                # Try search.php and index.php endpoints
-                for endpoint in ['search.php', 'index.php']:
+                for endpoint in ['index.php', 'search.php']:
                     search_url = f'{base_url}/{endpoint}?{query_params}'
                     try:
                         ids_list = await self.__get_ids(session, search_url)
@@ -124,10 +121,13 @@ class Libgen:
         return {}
 
     async def __get_ids(self, session: aiohttp.ClientSession, url: str) -> list:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=4), ssl=False) as resp:
-            if resp.status != 200:
-                return []
-            text = await resp.text()
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=3.5), ssl=False) as resp:
+                if resp.status != 200:
+                    return []
+                text = await resp.text()
+        except Exception:
+            return []
 
         soup = bsoup(text, 'html.parser')
         for s in soup.find_all('script'):
@@ -138,6 +138,9 @@ class Libgen:
             table = soup.find('table', class_=re.compile(r'table', re.I))
 
         if not table:
+            m_req = re.search(r'[?&]req=([a-fA-F0-9]{32})', url)
+            if m_req:
+                return [m_req.group(1)]
             return []
 
         ids = []
@@ -150,15 +153,22 @@ class Libgen:
             found_id = None
             for a in tr.find_all('a'):
                 href = a.get('href', '')
-                # Match /file.php?id=12345 or index.php?id=12345
-                m = re.search(r'[?&]id=(\d+)', href)
-                if m:
-                    found_id = m.group(1)
+                m_file = re.search(r'file\.php\?id=(\d+)', href)
+                if m_file:
+                    found_id = m_file.group(1)
                     break
                 m_md5 = re.search(r'[?&]md5=([a-fA-F0-9]{32})', href)
                 if m_md5:
                     found_id = m_md5.group(1)
                     break
+
+            if not found_id:
+                for a in tr.find_all('a'):
+                    href = a.get('href', '')
+                    m = re.search(r'[?&]id=(\d+)', href)
+                    if m:
+                        found_id = m.group(1)
+                        break
 
             if not found_id and tds[0].get_text(strip=True).isdigit():
                 found_id = tds[0].get_text(strip=True)
@@ -177,7 +187,6 @@ class Libgen:
 
         ids_param = ','.join(ids_list)
 
-        # Try json.php with object=f parameter (libgen.li/lc schema) and standard schema
         json_urls = [
             f'{base_url}/json.php?object=f&ids={ids_param}&fields=*',
             f'{base_url}/json.php?ids={ids_param}&fields=*'
@@ -186,7 +195,7 @@ class Libgen:
         raw_data = None
         for json_url in json_urls:
             try:
-                async with session.get(json_url, timeout=aiohttp.ClientTimeout(total=10), ssl=False) as resp:
+                async with session.get(json_url, timeout=aiohttp.ClientTimeout(total=3.5), ssl=False) as resp:
                     if resp.status == 200:
                         raw_data = await resp.json()
                         if raw_data and not (isinstance(raw_data, dict) and 'error' in raw_data):
@@ -211,7 +220,6 @@ class Libgen:
                             base_url: str) -> dict:
 
         data = {}
-        # Normalize raw_data into a dictionary keyed by ID
         normalized_data = {}
         if isinstance(raw_data, list):
             for item in raw_data:
@@ -233,17 +241,45 @@ class Libgen:
         if data:
             removed = []
             for res_id in list(data.keys()):
+                item = data[res_id]
+
+                # Fill missing essential metadata fields
+                if not item.get('title'):
+                    loc = item.get('locator', '')
+                    if loc:
+                        item['title'] = loc.rsplit('.', 1)[0]
+                    else:
+                        item['title'] = 'Unknown Title'
+                if not item.get('author'):
+                    item['author'] = 'Unknown Author'
+                if 'publisher' not in item or item['publisher'] is None:
+                    item['publisher'] = ''
+                if 'year' not in item or item['year'] is None:
+                    item['year'] = ''
+                if 'language' not in item or item['language'] is None:
+                    item['language'] = ''
+                if 'pages' not in item or item['pages'] is None:
+                    item['pages'] = ''
+                if 'volumeinfo' not in item or item['volumeinfo'] is None:
+                    item['volumeinfo'] = ''
+                if 'filesize' not in item or item['filesize'] is None:
+                    item['filesize'] = '0'
+                if 'extension' not in item or item['extension'] is None:
+                    item['extension'] = 'pdf'
+
                 if filters:
                     if not await Util().filter_result(data[res_id], filters):
                         removed.append(res_id)
                         continue
 
                 cover_reg = re.compile(r'^\d+\\?\/[a-z-0-9]+\..{1,4}$', re.IGNORECASE)
-                if 'coverurl' in data[res_id]:
+                if 'coverurl' in data[res_id] and data[res_id]['coverurl']:
                     if re.match(cover_reg, data[res_id]["coverurl"]):
                         data[res_id]['coverurl'] = f'{base_url}/covers/{data[res_id]["coverurl"]}'
                     elif not data[res_id]['coverurl'].startswith('http'):
                         data[res_id]['coverurl'] = f'{base_url}/covers/{data[res_id]["coverurl"]}'
+                else:
+                    data[res_id]['coverurl'] = None
 
                 if not return_fields or 'mirrors' in return_fields:
                     md5 = data[res_id].get('md5', '')
