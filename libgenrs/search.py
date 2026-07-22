@@ -272,15 +272,13 @@ class Libgen:
                 meta = table_meta.get(str(res_id), {}) if table_meta else {}
 
                 # Fill missing essential metadata fields using HTML table fallback
-                if not item.get('title') or item.get('title') == 'Unknown Title':
-                    if meta.get('title') and meta.get('title') != 'Unknown Title':
-                        item['title'] = meta['title']
+                raw_t = item.get('title', '')
+                if not raw_t or raw_t == 'Unknown Title' or raw_t.lower().startswith(('z:\\', 'z:/')) or '\\scimag_' in raw_t.lower():
+                    meta_t = meta.get('title', '')
+                    if meta_t and meta_t != 'Unknown Title' and not meta_t.lower().startswith(('z:\\', 'z:/')) and '\\scimag_' not in meta_t.lower():
+                        item['title'] = meta_t
                     else:
-                        loc = item.get('locator', '')
-                        if loc:
-                            item['title'] = loc.rsplit('.', 1)[0]
-                        else:
-                            item['title'] = 'Unknown Title'
+                        item['title'] = 'Unknown Title'
 
                 if not item.get('author') or item.get('author') == 'Unknown Author':
                     if meta.get('author') and meta.get('author') != 'Unknown Author':
